@@ -1,0 +1,553 @@
+{
+  "updatedAt": "2026-09-11T16:58:26.867Z",
+  "createdAt": "2026-09-11T14:15:34.541Z",
+  "id": "gazetteTracker01",
+  "name": "Official Gazette AI Tracker & Full-Text Compliance Audit Workflow",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      },
+      "id": "1-schedule-trigger",
+      "name": "1. Schedule Trigger (07:00)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        208,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, email, keywords FROM user_settings WHERE is_active = TRUE;",
+        "options": {}
+      },
+      "id": "2-postgres-get-users",
+      "name": "2. Fetch Active Users (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        432,
+        304
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "gazette_db_cred",
+          "name": "Gazette DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Construct daily index URL and prepare user list\nconst now = new Date();\nconst year = now.getFullYear();\nconst month = String(now.getMonth() + 1).padStart(2, '0');\nconst day = String(now.getDate()).padStart(2, '0');\nconst dateStr = `${year}${month}${day}`;\n\nconst fihristUrl = `https://www.resmigazete.gov.tr/fihrist?tarih=${year}-${month}-${day}`;\nconst fallbackUrl = 'https://www.resmigazete.gov.tr/';\n\nconst users = $input.all().map(item => item.json);\n\nreturn [{\n  json: {\n    dateStr,\n    targetUrl: fallbackUrl,\n    fihristUrl,\n    users\n  }\n}];"
+      },
+      "id": "3-prepare-fihrist",
+      "name": "3. Prepare Index Parameters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FIRECRAWL_API_URL || 'https://api.firecrawl.dev' }}/v1/scrape",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.FIRECRAWL_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url\": \"{{ $json.targetUrl }}\",\n  \"formats\": [\"markdown\", \"links\"]\n}",
+        "options": {}
+      },
+      "id": "4-scrape-fihrist",
+      "name": "4. Scrape Daily Index (Firecrawl)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        864,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract legislation links from Firecrawl response\nconst response = $input.first().json;\nconst prepData = $('3. Prepare Index Parameters').first().json;\n\nlet rawLinks = [];\nif (response.data && Array.isArray(response.data.links)) {\n  rawLinks = response.data.links;\n}\n\n// Parse links with titles from Markdown body\nconst linksWithTitles = [];\nif (response.data && response.data.markdown) {\n  const md = response.data.markdown;\n  const linkRegex = /\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\)]+|\\/[^\\)]+)\\)/g;\n  let match;\n  while ((match = linkRegex.exec(md)) !== null) {\n    let href = match[2];\n    if (href.startsWith('/')) {\n      href = 'https://www.resmigazete.gov.tr' + href;\n    }\n    const title = match[1].trim();\n    if (href.includes('resmigazete.gov.tr') && (href.includes('/eskiler/') || href.includes('/ilanlar/'))) {\n      linksWithTitles.push({ title, url: href });\n    }\n  }\n}\n\n// Include raw link list\nfor (const u of rawLinks) {\n  const url = typeof u === 'string' ? u : u.url;\n  if (url && (url.includes('/eskiler/') || url.includes('/ilanlar/') || url.includes('/mevzuat/')) && !linksWithTitles.some(l => l.url === url)) {\n    linksWithTitles.push({ title: 'Resmi Gazete Mevzuati', url });\n  }\n}\n\n// Filter individual acts and exclude monolithic gazette PDF when discrete articles exist\nconst hasSpecificActs = linksWithTitles.some(l => /\\d{8}-\\d+\\.(htm|html|pdf)/i.test(l.url));\nlet finalLinks = linksWithTitles.filter(l => {\n  if (hasSpecificActs && /\\/\\d{8}\\.pdf$/i.test(l.url)) {\n    return false; // Skip monolithic daily full-issue PDF, scan discrete acts\n  }\n  return !l.url.endsWith('/eskiler/') && !l.url.endsWith('eskiler.htm');\n});\n\n// Natural sorting\nfinalLinks.sort((a, b) => a.url.localeCompare(b.url, undefined, { numeric: true, sensitivity: 'base' }));\n\n// Deduplicate links\nconst seen = new Set();\nconst uniqueLinks = [];\nfor (const item of finalLinks) {\n  if (!seen.has(item.url)) {\n    seen.add(item.url);\n    uniqueLinks.push(item);\n  }\n}\n\nreturn [{\n  json: {\n    targetUrl: prepData.targetUrl,\n    totalItems: uniqueLinks.length,\n    items: uniqueLinks,\n    users: prepData.users\n  }\n}];"
+      },
+      "id": "5-parse-links",
+      "name": "5. Parse Legislation Links",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO crawl_logs (target_url, status, items_scraped_count, details)\nVALUES (\n  '{{ $json.targetUrl }}',\n  'IN_PROGRESS',\n  {{ $json.totalItems }},\n  'Gazette index crawl started. Total items to examine: {{ $json.totalItems }}'\n)\nRETURNING id;",
+        "options": {}
+      },
+      "id": "6-log-crawl-start",
+      "name": "6. Log Crawl Start (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1312,
+        304
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "gazette_db_cred",
+          "name": "Gazette DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Expand legislation items for sequential loop processing\nconst parsed = $('5. Parse Legislation Links').first().json;\nconst crawlLogId = $input.first().json.id;\n\nreturn parsed.items.map(item => ({\n  json: {\n    crawlLogId,\n    title: item.title,\n    url: item.url,\n    users: parsed.users\n  }\n}));"
+      },
+      "id": "7-expand-items",
+      "name": "7. Sequence Items (Pre-Loop)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FIRECRAWL_API_URL || 'https://api.firecrawl.dev' }}/v1/scrape",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.FIRECRAWL_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url\": \"{{ $json.url }}\",\n  \"formats\": [\"markdown\"],\n  \"onlyMainContent\": false\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "8-scrape-body-text",
+      "name": "8. Full-Text & PDF Scrape (Firecrawl)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1744,
+        304
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Full-text search and match classification (TITLE vs BODY_TEXT vs PDF_CONTENT)\nfunction trNormalize(str) {\n  return (str || '')\n    .replace(/İ/g, 'i')\n    .replace(/I/g, 'ı')\n    .toLocaleLowerCase('tr-TR');\n}\n\nconst allInputs = $input.all();\nconst upstreamItems = $('7. Sequence Items (Pre-Loop)').all();\nconst matches = [];\n\nfor (let i = 0; i < allInputs.length; i++) {\n  const firecrawlRes = allInputs[i].json;\n  const itemData = upstreamItems[i] ? upstreamItems[i].json : {};\n\n  const url = itemData.url || firecrawlRes.data?.metadata?.sourceURL || firecrawlRes.data?.metadata?.url || '';\n  const legislationTitle = (firecrawlRes.data?.metadata?.title || itemData.title || url).trim();\n  const bodyMarkdown = (firecrawlRes.data?.markdown || '').trim();\n  const isPdf = url.toLowerCase().endsWith('.pdf');\n  const crawlLogId = itemData.crawlLogId || 1;\n  const users = itemData.users || [];\n\n  if (!bodyMarkdown && !legislationTitle) continue;\n\n  const normTitle = trNormalize(legislationTitle);\n  const normBody = trNormalize(bodyMarkdown);\n\n  for (const user of users) {\n    const keywords = Array.isArray(user.keywords) ? user.keywords : [user.keywords];\n    for (const kw of keywords) {\n      if (!kw) continue;\n      const normKw = trNormalize(kw);\n      const regex = new RegExp(normKw.replace(/[-\\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&'), 'i');\n\n      let matchLocation = null;\n      if (regex.test(normTitle)) {\n        matchLocation = 'TITLE';\n      } else if (regex.test(normBody)) {\n        matchLocation = isPdf ? 'PDF_CONTENT' : 'BODY_TEXT';\n      }\n\n      if (matchLocation) {\n        matches.push({\n          crawlLogId,\n          recipientEmail: user.email,\n          matchedKeyword: kw,\n          legislationTitle,\n          legislationUrl: url,\n          matchLocation,\n          bodySnippet: bodyMarkdown.substring(0, 4500),\n          sessionId: `${crawlLogId}_${user.email}`,\n          agentPrompt: `Mevzuat Başlığı: ${legislationTitle}\\nKaynak Bağlantı: ${url}\\nEşleşme Yeri: ${matchLocation}\\nTakip Edilen Kelime: ${kw}\\n\\nİncelenecek Mevzuat Metni:\\n${bodyMarkdown.substring(0, 4500)}\\n\\nLÜTFEN DİKKAT: Raporunu KESİNLİKLE %100 duru Türkçe ile hazırla. Asla Çince veya yabancı bir kelime ya da karakter (örneğin '以下' gibi) kullanma.`\n        });\n      }\n    }\n  }\n}\n\nreturn matches.map(m => ({ json: m }));"
+      },
+      "id": "9-full-text-matcher",
+      "name": "9. Full-Text Search & Match (Code Node)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1968,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.agentPrompt }}",
+        "options": {
+          "systemMessage": "Sen T.C. Mevzuatı ve Vatandaş Hakları / Yükümlülükleri konusunda uzmanlaşmış bir 'AI Hukuk & Uyum Ajanı'sın (AI Legal Compliance Agent).\n\nDİL VE İFADE KURALLARI (ZORUNLU VE EN ÖNCELİKLİ KURAL):\n- Raporunun TAMAMINI istisnasız %100 duru, akıcı, gramer kurallarına uygun TÜRKÇE ile yazacaksın.\n- KESİNLİKLE Çince (örneğin '以下' gibi), İngilizce veya başka hiçbir yabancı dilden karakter ya da kelime KULLANMA. '以下' yerine mutlaka 'aşağıdaki' veya 'aşağıda belirtilen' yaz.\n- ÇIKTI FORMATI: Rapor doğrudan düz metin (plain text) olarak e-posta iletileceği için KESİNLİKLE markdown sembolleri (###, **, *, __ gibi işaretler) KULLANMA. Başlıkları düz ve büyük harflerle yaz, alt maddeleri ise '• ' imi ile listele.\n- Araçlardan (tool) dönen ham teknik terimleri veya değişken adlarını doğrudan cümleye aktarma. Hukuki ve vatandaşın rahatça anlayabileceği temiz bir Türkçe kullan.\n\nGÖREVİN:\nKullanıcının takip ettiği '{{ $json.matchedKeyword }}' anahtar kelimesi odağında ilgili mevzuatı derinlemesine incelemek ve özellikle VATANDAŞA / KULLANICIYA doğrudan veya dolaylı bir YÜKÜMLÜLÜK, KISITLAMA, MALİ YÜK veya GÖREV getirilip getirilmediğini tespit etmektir.\n\nRAPORUNDA KESİNLİKLE ŞU 4 BAŞLIĞA YER VER:\n\n1. 📋 MEVZUAT GENEL ÖZETİ:\n• Mevzuatın temel amacı ve takip edilen '{{ $json.matchedKeyword }}' kavramının düzenlemedeki yeri.\n\n2. ⚠️ VATANDAŞA / İŞLETMEYE GETİRİLEN YÜKÜMLÜLÜKLER:\n• Vatandaşa yeni bir mali yük, harç, vergi, başvuru, beyan, kayıt veya izin zorunluluğu getiriyor mu?\n• Uymama durumunda idari para cezası veya yaptırım var mı?\n• (Eğer herhangi bir yükümlülük getirmiyorsa: 'Bu mevzuat vatandaşa doğrudan yeni bir yükümlülük getirmemektedir.' şeklinde belirt).\n\n3. ⏳ KRİTİK SÜRELER VE YÜRÜRLÜK:\n• Düzenleme ne zaman yürürlüğe giriyor? Belirlenen bir son tarih veya süre kısıtı var mı?\n\n4. 💡 SOMUT AKSİYON VE TAVSİYE:\n• Vatandaşın/kullanıcının şu anda yapması gereken bir eylem var mı?"
+        }
+      },
+      "id": "10-langchain-agent",
+      "name": "10. Legal & Compliance AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        2240,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.sessionId || ($json.crawlLogId + '_' + $json.recipientEmail) || 'gazette_session' }}"
+      },
+      "id": "10b-memory",
+      "name": "Agent Memory (Window Memory)",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        2288,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "name": "citizen_compliance_and_risk_tool",
+        "description": "Filters and analyzes obligation, tax, fee, penalty, and deadline clauses within the legislation text.",
+        "jsCode": "const text = query || '';\nconst hasTax = /vergi|harç|ücret|ödeme|ceza|müeyyide/i.test(text);\nconst hasDuty = /zorunlu|yükümlü|mecbur|etmekle mükellef/i.test(text);\nconst hasDeadline = /gün|ay|tarihine kadar|süre/i.test(text);\nreturn JSON.stringify({\n  mali_yuk_durumu: hasTax ? 'Mali yük, vergi, harç veya yaptırım içeren ifadeler bulunmaktadır.' : 'Mali bir yükümlülük veya ceza tespit edilmemiştir.',\n  vatandas_sorumlulugu: hasDuty ? 'Vatandaş veya işletmeler için zorunlu mükellefiyet ifadeleri mevcuttur.' : 'Doğrudan zorunlu yeni bir mükellefiyet getirilmemiştir.',\n  sure_bilgisi: hasDeadline ? 'Mevzuat içerisinde işlem veya yürürlük için süre/tarih kısıtları yer almaktadır.' : 'Belirlenmiş bir son tarih veya süre kısıtı belirtilmemiştir.',\n  ozet_degerlendirme: (hasTax || hasDuty) ? 'YUKUMLULUK_BULUNMAKTADIR' : 'GENEL_BILGILENDIRME_VE_YUKUMLULUK_YOKTUR'\n});"
+      },
+      "id": "10c-tool-compliance",
+      "name": "Citizen Compliance Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.1,
+      "position": [
+        2448,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI Agent output, strip markdown markers and convert to clean plain text\nconst allMatches = $('9. Full-Text Search & Match (Code Node)').all();\nconst allAgentOutputs = $input.all();\n\nfunction formatToPlainText(text) {\n  if (!text) return '';\n  let s = text.trim().replace(/\\r\\n/g, '\\n');\n\n  // Remove markdown headers (###) and insert clean divider lines\n  s = s.replace(/^#{1,6}\\s*(.+)$/gm, (match, title) => {\n    return `\\n----------------------------------------------------------------------\\n${title.trim()}\\n----------------------------------------------------------------------`;\n  });\n\n  // Convert list markers (* or -) into bullet points (• )\n  s = s.replace(/^[\\*\\-]\\s+/gm, '• ');\n\n  // Strip bold and italic markdown tags (** and *)\n  s = s.replace(/\\*\\*(.*?)\\*\\*/g, '$1');\n  s = s.replace(/\\*(.*?)\\*/g, '$1');\n  s = s.replace(/__(.*?)__/g, '$1');\n  s = s.replace(/_(.*?)_/g, '$1');\n\n  // Strip inline code or backticks\n  s = s.replace(/`([^`]+)`/g, '$1');\n\n  // Normalize excessive newlines\n  s = s.replace(/\\n{3,}/g, '\\n\\n');\n\n  return s.trim();\n}\n\nreturn allMatches.map((item, index) => {\n  const matchItem = item.json;\n  const agentRes = allAgentOutputs[index] ? allAgentOutputs[index].json : {};\n  \n  let rawSummary = '';\n  if (agentRes && agentRes.output) {\n    rawSummary = agentRes.output;\n  } else if (agentRes && agentRes.text) {\n    rawSummary = agentRes.text;\n  } else if (agentRes && agentRes.response) {\n    rawSummary = agentRes.response;\n  } else {\n    rawSummary = `Mevzuatta '${matchItem.matchedKeyword}' kelimesi ${matchItem.matchLocation} konumunda yakalanmıştır. Lütfen mevzuat metnini inceleyiniz.`;\n  }\n  \n  const aiSummary = formatToPlainText(rawSummary);\n  \n  return {\n    json: {\n      ...matchItem,\n      aiSummary\n    }\n  };\n});"
+      },
+      "id": "11-parse-summary",
+      "name": "11. Format Summary (Plain Text)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('11. Format Summary (Plain Text)').item.json.recipientEmail }}",
+        "subject": "=[Official Gazette Alert] '{{ $('11. Format Summary (Plain Text)').item.json.matchedKeyword }}' Compliance Report: {{ $('11. Format Summary (Plain Text)').item.json.legislationTitle }}",
+        "emailType": "text",
+        "message": "=⚖️ OFFICIAL GAZETTE AI LEGAL & COMPLIANCE ALERT\n======================================================================\n\nDear subscriber,\n\nYour tracked keyword '{{ $('11. Format Summary (Plain Text)').item.json.matchedKeyword }}' matched in today's Official Gazette and has been thoroughly analyzed by Google Gemini AI Legal & Compliance Agent.\n\n📌 LEGISLATION DETAILS:\n----------------------------------------------------------------------\n• Title          : {{ $('11. Format Summary (Plain Text)').item.json.legislationTitle }}\n• Match Location : {{ $('11. Format Summary (Plain Text)').item.json.matchLocation }}\n• Source Link    : {{ $('11. Format Summary (Plain Text)').item.json.legislationUrl }}\n\n🤖 GOOGLE GEMINI COMPLIANCE & LIABILITY REPORT:\n----------------------------------------------------------------------\n{{ $('11. Format Summary (Plain Text)').item.json.aiSummary }}\n\n======================================================================\nThis report was automatically generated by the Official Gazette AI Tracker System.",
+        "options": {}
+      },
+      "id": "12-send-email",
+      "name": "12. Send Email (Gmail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2784,
+        304
+      ],
+      "webhookId": "8e94589f-d526-4ba7-adc2-4b99dd0d7037",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Mmsf5KIYDPmYDmAB",
+          "name": "Gmail account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO notifications_log (\n  crawl_log_id,\n  recipient_email,\n  matched_keyword,\n  legislation_title,\n  legislation_url,\n  match_location,\n  ai_summary,\n  email_status\n)\nVALUES (\n  {{ $('11. Format Summary (Plain Text)').item.json.crawlLogId || 1 }},\n  '{{ $('11. Format Summary (Plain Text)').item.json.recipientEmail || \"\" }}',\n  '{{ $('11. Format Summary (Plain Text)').item.json.matchedKeyword || \"\" }}',\n  '{{ ($('11. Format Summary (Plain Text)').item.json.legislationTitle || \"\").replace(/'/g, \"''\") }}',\n  '{{ $('11. Format Summary (Plain Text)').item.json.legislationUrl || \"\" }}',\n  '{{ $('11. Format Summary (Plain Text)').item.json.matchLocation || \"BODY_TEXT\" }}',\n  '{{ ($('11. Format Summary (Plain Text)').item.json.aiSummary || \"\").replace(/'/g, \"''\") }}',\n  '{{ ($('12. Send Email (Gmail)').item.json && $('12. Send Email (Gmail)').item.json.error) ? \"FAILED\" : \"SENT\" }}'\n);",
+        "options": {}
+      },
+      "id": "13-log-notification",
+      "name": "13. Log Notification (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3008,
+        304
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "gazette_db_cred",
+          "name": "Gazette DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE crawl_logs\nSET status = 'SUCCESS',\n    matched_count = (SELECT COUNT(*) FROM notifications_log WHERE crawl_log_id = {{ $('6. Log Crawl Start (Postgres)').first().json.id || 1 }}),\n    details = 'Crawl and full-text compliance audit completed successfully.'\nWHERE id = {{ $('6. Log Crawl Start (Postgres)').first().json.id || 1 }};",
+        "options": {}
+      },
+      "id": "14-finalize-crawl",
+      "name": "14. Finalize Crawl Log (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3232,
+        304
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "gazette_db_cred",
+          "name": "Gazette DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        2128,
+        528
+      ],
+      "id": "64b525d9-7e89-41d1-aa02-26b00fc03377",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "3HvkqFv1R1yU4a1Y",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "1. Schedule Trigger (07:00)": {
+      "main": [
+        [
+          {
+            "node": "2. Fetch Active Users (Postgres)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Fetch Active Users (Postgres)": {
+      "main": [
+        [
+          {
+            "node": "3. Prepare Index Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Prepare Index Parameters": {
+      "main": [
+        [
+          {
+            "node": "4. Scrape Daily Index (Firecrawl)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Scrape Daily Index (Firecrawl)": {
+      "main": [
+        [
+          {
+            "node": "5. Parse Legislation Links",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Parse Legislation Links": {
+      "main": [
+        [
+          {
+            "node": "6. Log Crawl Start (Postgres)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Log Crawl Start (Postgres)": {
+      "main": [
+        [
+          {
+            "node": "7. Sequence Items (Pre-Loop)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Sequence Items (Pre-Loop)": {
+      "main": [
+        [
+          {
+            "node": "8. Full-Text & PDF Scrape (Firecrawl)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Full-Text & PDF Scrape (Firecrawl)": {
+      "main": [
+        [
+          {
+            "node": "9. Full-Text Search & Match (Code Node)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Full-Text Search & Match (Code Node)": {
+      "main": [
+        [
+          {
+            "node": "10. Legal & Compliance AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent Memory (Window Memory)": {
+      "ai_memory": [
+        [
+          {
+            "node": "10. Legal & Compliance AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Citizen Compliance Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "10. Legal & Compliance AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Legal & Compliance AI Agent": {
+      "main": [
+        [
+          {
+            "node": "11. Format Summary (Plain Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Format Summary (Plain Text)": {
+      "main": [
+        [
+          {
+            "node": "12. Send Email (Gmail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12. Send Email (Gmail)": {
+      "main": [
+        [
+          {
+            "node": "13. Log Notification (Postgres)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13. Log Notification (Postgres)": {
+      "main": [
+        [
+          {
+            "node": "14. Finalize Crawl Log (Postgres)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "10. Legal & Compliance AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "pinData": {},
+  "versionId": "6bfae109-2dbc-44ed-910e-f07b3422ba68",
+  "activeVersionId": null,
+  "versionCounter": 21,
+  "triggerCount": 0,
+  "sourceWorkflowId": null,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-09-11T14:15:34.547Z",
+      "createdAt": "2026-09-11T14:15:34.547Z",
+      "role": "workflow:owner",
+      "workflowId": "gazetteTracker01",
+      "projectId": "PRBVh9U4rBmBZCf7",
+      "project": {
+        "updatedAt": "2026-09-11T14:18:09.554Z",
+        "createdAt": "2026-09-11T13:54:57.895Z",
+        "id": "PRBVh9U4rBmBZCf7",
+        "name": "Tuncay YAYLALI <tuncay_yaylali@yahoo.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "customTelemetryTags": [],
+        "creatorId": "388cf14f-7154-4999-90bf-2c6d31df3241"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}
