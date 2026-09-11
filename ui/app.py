@@ -374,9 +374,13 @@ with tab_audit:
 
     st.divider()
 
+    # Initialize selected notification state if not set
+    if "selected_notification_id" not in st.session_state:
+        st.session_state["selected_notification_id"] = notifications[0]["id"] if notifications else None
+
     # Dispatched Notifications & Matches (Full Width)
     st.subheader("📬 Dispatched Notifications & Audit Log")
-    st.caption("Matched legislations, detection location, and email dispatch status")
+    st.caption("👇 Click on any **legislation row** in the table below to automatically view its AI summary and legal impact report.")
     
     if notifications:
         df_notif = pd.DataFrame(notifications)
@@ -399,7 +403,20 @@ with tab_audit:
             "Status": df_notif["email_status"].apply(lambda s: f"✅ {s}" if s == "SENT" else f"❌ {s}"),
             "Date": pd.to_datetime(df_notif["sent_at"]).dt.strftime("%Y-%m-%d %H:%M")
         })
-        st.dataframe(df_notif_display, use_container_width=True, hide_index=True)
+
+        notif_event = st.dataframe(
+            df_notif_display, 
+            use_container_width=True, 
+            hide_index=True,
+            selection_mode="single-row",
+            on_select="rerun"
+        )
+
+        # When a row is clicked/selected in the table, sync session state
+        if notif_event and hasattr(notif_event, "selection") and notif_event.selection.rows:
+            sel_row_idx = notif_event.selection.rows[0]
+            if 0 <= sel_row_idx < len(notifications):
+                st.session_state["selected_notification_id"] = notifications[sel_row_idx]["id"]
     else:
         st.info("No dispatched notification records found yet.")
 
@@ -413,8 +430,24 @@ with tab_audit:
             f"ID #{n['id']} - {n['legislation_title'][:70]}... ({n['matched_keyword']})": n
             for n in notifications
         }
-        selected_key = st.selectbox("Select a legislation record to inspect:", list(options.keys()))
+        option_keys = list(options.keys())
+
+        # Determine index of currently selected notification
+        default_index = 0
+        current_selected_id = st.session_state.get("selected_notification_id")
+        for idx, n in enumerate(notifications):
+            if n["id"] == current_selected_id:
+                default_index = idx
+                break
+
+        selected_key = st.selectbox(
+            "Select a legislation record to inspect:", 
+            options=option_keys,
+            index=default_index,
+            key=f"select_notif_box_{current_selected_id}"
+        )
         selected_item = options[selected_key]
+        st.session_state["selected_notification_id"] = selected_item["id"]
 
         # Location badge format
         loc = selected_item["match_location"]
