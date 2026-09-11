@@ -378,45 +378,132 @@ with tab_audit:
     if "selected_notification_id" not in st.session_state:
         st.session_state["selected_notification_id"] = notifications[0]["id"] if notifications else None
 
+    # Custom CSS for interactive hoverable ID buttons and table styling
+    st.markdown("""
+    <style>
+    /* Audit Table ID interactive button styling */
+    div[class*="st-key-btn_audit_id_"] button {
+        border-radius: 6px !important;
+        font-size: 0.84rem !important;
+        font-weight: 700 !important;
+        padding: 2px 8px !important;
+        min-height: 30px !important;
+        height: 30px !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        cursor: pointer !important;
+        width: 100% !important;
+    }
+
+    /* Secondary (default unselected) state */
+    div[class*="st-key-btn_audit_id_"] button[kind="secondary"] {
+        background-color: #eff6ff !important;
+        color: #1d4ed8 !important;
+        border: 1.5px solid #bfdbfe !important;
+    }
+
+    /* Hover state on unselected button */
+    div[class*="st-key-btn_audit_id_"] button[kind="secondary"]:hover {
+        background-color: #2563eb !important;
+        color: #ffffff !important;
+        border-color: #1d4ed8 !important;
+        transform: translateY(-1.5px) !important;
+        box-shadow: 0 4px 8px -1px rgba(37, 99, 235, 0.3) !important;
+        cursor: pointer !important;
+    }
+
+    /* Primary (active / selected) state */
+    div[class*="st-key-btn_audit_id_"] button[kind="primary"] {
+        background-color: #1e40af !important;
+        color: #ffffff !important;
+        border: 1.5px solid #1e3a8a !important;
+        box-shadow: 0 0 0 2.5px rgba(59, 130, 246, 0.45) !important;
+    }
+
+    div[class*="st-key-btn_audit_id_"] button[kind="primary"]:hover {
+        background-color: #1d4ed8 !important;
+        color: #ffffff !important;
+        transform: translateY(-1.5px) !important;
+        cursor: pointer !important;
+    }
+
+    .audit-header-col {
+        font-weight: 700;
+        color: #334155;
+        font-size: 0.83rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .audit-row-divider {
+        margin: 5px 0 !important;
+        border: 0 !important;
+        border-top: 1px solid #f1f5f9 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     # Dispatched Notifications & Matches (Full Width)
     st.subheader("📬 Dispatched Notifications & Audit Log")
-    st.caption("👇 Click on any **legislation row** in the table below to automatically view its AI summary and legal impact report.")
+    st.caption("👇 Hover over any **ID badge** and click it to load the legislation & AI summary card below.")
     
     if notifications:
-        df_notif = pd.DataFrame(notifications)
-        
-        def format_location(loc):
-            if loc == "BODY_TEXT":
-                return "📄 BODY TEXT"
-            elif loc == "PDF_CONTENT":
-                return "📑 PDF CONTENT"
-            elif loc == "TITLE":
-                return "🏷️ TITLE"
-            return str(loc)
+        current_selected_id = st.session_state.get("selected_notification_id")
 
-        df_notif_display = pd.DataFrame({
-            "ID": df_notif["id"],
-            "Recipient Email": df_notif["recipient_email"],
-            "Matched Keyword": df_notif["matched_keyword"],
-            "Match Location": df_notif["match_location"].apply(format_location),
-            "Legislation Title": df_notif["legislation_title"],
-            "Status": df_notif["email_status"].apply(lambda s: f"✅ {s}" if s == "SENT" else f"❌ {s}"),
-            "Date": pd.to_datetime(df_notif["sent_at"]).dt.strftime("%Y-%m-%d %H:%M")
-        })
+        # Table Container
+        with st.container(border=True):
+            # Table Header Row
+            h_id, h_email, h_kw, h_loc, h_title, h_status, h_date = st.columns(
+                [0.8, 1.9, 1.4, 1.4, 3.4, 1.0, 1.3],
+                vertical_alignment="center"
+            )
+            h_id.markdown("<span class='audit-header-col'>ID</span>", unsafe_allow_html=True)
+            h_email.markdown("<span class='audit-header-col'>Recipient</span>", unsafe_allow_html=True)
+            h_kw.markdown("<span class='audit-header-col'>Keyword</span>", unsafe_allow_html=True)
+            h_loc.markdown("<span class='audit-header-col'>Location</span>", unsafe_allow_html=True)
+            h_title.markdown("<span class='audit-header-col'>Legislation Title</span>", unsafe_allow_html=True)
+            h_status.markdown("<span class='audit-header-col'>Status</span>", unsafe_allow_html=True)
+            h_date.markdown("<span class='audit-header-col'>Sent Date</span>", unsafe_allow_html=True)
 
-        notif_event = st.dataframe(
-            df_notif_display, 
-            use_container_width=True, 
-            hide_index=True,
-            selection_mode="single-row",
-            on_select="rerun"
-        )
+            st.markdown("<hr class='audit-row-divider' style='border-top: 2px solid #cbd5e1 !important;'>", unsafe_allow_html=True)
 
-        # When a row is clicked/selected in the table, sync session state
-        if notif_event and hasattr(notif_event, "selection") and notif_event.selection.rows:
-            sel_row_idx = notif_event.selection.rows[0]
-            if 0 <= sel_row_idx < len(notifications):
-                st.session_state["selected_notification_id"] = notifications[sel_row_idx]["id"]
+            # Table Data Rows
+            for n in notifications:
+                is_selected = (n["id"] == current_selected_id)
+                r_id, r_email, r_kw, r_loc, r_title, r_status, r_date = st.columns(
+                    [0.8, 1.9, 1.4, 1.4, 3.4, 1.0, 1.3],
+                    vertical_alignment="center"
+                )
+
+                # Clickable ID badge button (changes color on hover, updates review card on click)
+                btn_label = f"👉 #{n['id']}" if is_selected else f"#{n['id']}"
+                if r_id.button(
+                    btn_label,
+                    key=f"btn_audit_id_{n['id']}",
+                    type="primary" if is_selected else "secondary",
+                    use_container_width=True,
+                    help=f"Click ID #{n['id']} to view AI compliance summary & full details"
+                ):
+                    st.session_state["selected_notification_id"] = n["id"]
+                    st.rerun()
+
+                r_email.write(n["recipient_email"])
+                r_kw.markdown(f"`{n['matched_keyword']}`")
+
+                loc = n.get("match_location", "")
+                loc_badge = "📄 BODY" if loc == "BODY_TEXT" else ("📑 PDF" if loc == "PDF_CONTENT" else "🏷️ TITLE")
+                r_loc.markdown(f"`{loc_badge}`")
+
+                title_text = n.get("legislation_title", "")
+                short_title = title_text if len(title_text) <= 65 else title_text[:62] + "..."
+                r_title.markdown(f"<span title='{title_text}'>{short_title}</span>", unsafe_allow_html=True)
+
+                r_status.markdown("✅ SENT" if n.get("email_status") == "SENT" else "❌ FAIL")
+
+                dt_val = n.get("sent_at")
+                dt_str = pd.to_datetime(dt_val).strftime("%Y-%m-%d %H:%M") if dt_val else "-"
+                r_date.caption(dt_str)
+
+                st.markdown("<hr class='audit-row-divider'>", unsafe_allow_html=True)
     else:
         st.info("No dispatched notification records found yet.")
 
