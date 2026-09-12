@@ -2,6 +2,8 @@
 
 An automated microservices system that monitors the Turkish Official Gazette (`resmigazete.gov.tr`) daily, inspects the **full text and attached PDF documents** of all published legislations against user-defined keywords, scrapes matched content using Firecrawl, generates compliance summaries using **Google Gemini AI**, dispatches email alerts via Gmail, and maintains a complete audit trail in PostgreSQL.
 
+![Official Gazette AI Tracker & Audit Dashboard](docs/images/streamlit_dashboard.png)
+
 ---
 
 ## 🏛️ Architecture & Services
@@ -114,3 +116,14 @@ Navigate to `http://localhost:8501` in your browser.
   - **PostgreSQL:** `gazette_db_cred` is generated on boot matching container credentials.
   - **Gmail OAuth2:** `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` are pre-configured.
 - **Execution:** Runs automatically every morning at 07:00 (CRON: `0 7 * * *`) or can be triggered manually via the `Test workflow` button in n8n.
+
+### 🔄 End-to-End Orchestration Workflow Canvas
+
+The automated pipeline orchestrates everything from CRON triggering to full-text PDF crawling, LangChain AI agent reasoning, and email notification:
+
+![Official Gazette AI Tracker n8n Workflow Canvas](docs/images/n8n_workflow_canvas.png)
+
+### 📋 n8n Workflow Overview & Management
+
+![n8n Workflow Overview](docs/images/n8n_overview.png)
+
