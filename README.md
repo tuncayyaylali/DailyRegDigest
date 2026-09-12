@@ -10,12 +10,12 @@ An automated microservices system that monitors the Turkish Official Gazette (`r
 
 The system runs entirely in Docker containers connected via the `gazette_net` bridge network:
 
-| Service | Technology / Base Image | Port | Responsibility |
+| Service | Technology / Base Image | Port / URL | Responsibility |
 | :--- | :--- | :--- | :--- |
 | **Database** | `postgres:15-alpine` | `5432` | Stores user preferences (`user_settings`), scan logs (`crawl_logs`), and dispatch history (`notifications_log`). |
-| **Workflow & AI Engine** | `docker.n8n.io/n8nio/n8n:latest` | `5678` | CRON trigger (07:00), Firecrawl integration, **Google Gemini LangChain AI Agent** for citizen obligations & risk analysis, and Gmail dispatching. |
+| **Workflow & AI Engine** | `docker.n8n.io/n8nio/n8n:latest` | [`5678`](http://localhost:5678) | CRON trigger (07:00), Firecrawl integration, **Google Gemini LangChain AI Agent** for citizen obligations & risk analysis, and Gmail dispatching. |
 | **AI Model** | `Google Gemini API` | Cloud | In-depth legislative impact assessment, tax/penalty detection, obligations, and effective dates. |
-| **User Dashboard** | `Python / Streamlit` (`./ui`) | `8501` | Subscription management (UPSERT), real-time profile editing, and detailed audit / AI summary inspection cards. |
+| **User Dashboard** | `Python / Streamlit` (`./ui`) | [`8501`](http://localhost:8501) | Subscription management (UPSERT), real-time profile editing, and detailed audit / AI summary inspection cards. |
 | **Scraper** | `Firecrawl API` (Cloud / Self-hosted) | - | Converts daily gazette indices and legislative articles (including PDFs) into LLM-friendly Markdown. |
 
 ---
@@ -75,6 +75,16 @@ Check container status:
 docker compose ps
 ```
 
+### 🌐 Web Service Endpoints
+
+Once the containers are running, access the web services in your browser:
+
+| Interface / Service | Direct URL | Port | Description |
+| :--- | :--- | :--- | :--- |
+| 🖥️ **Streamlit User Dashboard** | [**`http://localhost:8501`**](http://localhost:8501) | `8501` | Keyword subscriptions, subscriber management, and AI compliance audit log |
+| ⚡ **n8n Workflow Engine** | [**`http://localhost:5678`**](http://localhost:5678) | `5678` | Visual workflow canvas, execution monitoring, and API credentials |
+| 🗄️ **PostgreSQL Database** | `localhost:5432` | `5432` | Database: `gazette_db` (User: `postgres`) |
+
 ### 4. One-Time Gmail Authorization (Sign in with Google)
 
 > 💡 **Important Note:** The PostgreSQL database, Google Gemini AI, and n8n workflow are **100% automatically configured** from `.env`. Only **Gmail** requires a one-time browser consent due to Google OAuth2 security policies:
@@ -91,7 +101,11 @@ docker compose ps
 
 ## 🖥️ User Dashboard (Streamlit)
 
-Navigate to `http://localhost:8501` in your browser.
+- **Direct Web Access:** [**`http://localhost:8501`**](http://localhost:8501)
+- **Local Port:** `8501`
+- **Application Directory:** [`./ui`](ui/)
+
+Navigate to [**`http://localhost:8501`**](http://localhost:8501) in your browser to access the management dashboard.
 
 ### Tab 1: User & Keyword Subscriptions
 - **Any Email Provider Supported:** Gmail is used as the outbound sending engine; recipient subscribers can use Yahoo, Outlook, Gmail, or corporate domain addresses.
